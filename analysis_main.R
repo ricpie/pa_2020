@@ -10,7 +10,7 @@ library(DT)
 library(data.table)
 library(tools)
 library(plyr)
-registerDoParallel(cores=detectCores()-1)
+library(lubridate)
 
 
 # Define rough regions. 
@@ -19,7 +19,8 @@ denver_lon_range = c(-106,-104)
 nyc_lat_range = c(40,42)
 nyc_lon_range = c(-76,-73)
 
-#Import PA data. Use with api later?
+
+#Import PA data. Use api later?
 all_pa_paths <- list.files(
   path = "pa_data",
   recursive = TRUE,
@@ -84,11 +85,33 @@ plot_box <- pa_data %>%
   dplyr::filter(!region %in% "Other") %>% 
   dplyr::group_by(datetime,region,enviro,year) %>% 
   dplyr::summarise(meanpm25 = mean(`PM2.5_CF1_ug/m3`,na.rm = T)) %>% 
-  ggplot(aes(x=datetime,y=`PM2.5_CF1_ug/m3`,color = year)) + 
-  geom_jitter(alpha = 0.1,width = .3) +
+  ggplot(aes(x=year,y=meanpm25)) + 
+  geom_jitter(alpha = 0.1,width = .1) +
   geom_boxplot(alpha = 0.2) +
+  ylim(c(0,100)) +
   facet_grid(region~enviro) 
 plot_box
 
 
+plot_tod <- pa_data %>% 
+  dplyr::filter(region %in% "nyc") %>% 
+  dplyr::group_by(datetime,region,enviro,year) %>% 
+  dplyr::summarise(meanpm25 = mean(`PM2.5_CF1_ug/m3`,na.rm = T)) %>% 
+  dplyr::mutate(hour = hour(datetime)) %>% 
+  ggplot(aes(x=hour,y=meanpm25,color = region)) + 
+  geom_smooth(alpha = 0.2) +
+  ylim(c(0,30)) +
+  facet_grid(year~enviro) 
+plot_tod
+
+plot_tod <- pa_data %>% 
+  dplyr::filter(region %in% "denver") %>% 
+  dplyr::group_by(datetime,region,enviro,year) %>% 
+  dplyr::summarise(meanpm25 = mean(`PM2.5_CF1_ug/m3`,na.rm = T)) %>% 
+  dplyr::mutate(hour = hour(datetime)) %>% 
+  ggplot(aes(x=hour,y=meanpm25,color = region)) + 
+  geom_smooth(alpha = 0.2) +
+  ylim(c(0,30)) +
+  facet_grid(year~enviro) 
+plot_tod
 
