@@ -13,13 +13,16 @@ library(plyr)
 registerDoParallel(cores=detectCores()-1)
 
 
-# Import data from region. Use with api later?
-path_region = "denver"
+# Define rough regions. 
+fence = data.frame(region = c("denver","nyc"),
+                  denver_lat_range = c(39,41),
+                  denver_lon_range = c(-104,-106),
+                  nyc_lat_range = c(40,42),
+                  nyc_lon_range = c(-74,-76))
 
-
-#Import PA data
+#Import PA data. Use with api later?
 all_pa_paths <- list.files(
-  path = path_region,
+  path = "pa_data",
   recursive = TRUE,
   full.names = TRUE
 ) %>%
@@ -31,55 +34,47 @@ all_pa_paths <- list.files(
 #Import purpleair data, format the time stamp, get rid of cruft
 import_pa <-function(x){
   asdf<-readr::read_csv(x,
-                  col_names = TRUE,
-                  col_types = paste0(paste0(replicate(1,'c'),collapse = ''),paste0(replicate(7,'d'),collapse = ''),'c',collapse = '')
-  ) %>%
+                        col_names = TRUE,
+                        col_types = paste0(paste0(replicate(1,'c'),collapse = ''),
+                                           paste0(replicate(7,'d'),collapse = ''),'c',collapse = '')) %>%
     dplyr::mutate(filename = x,
-                  trimmed_filename = sub(".*\\(", "", file_path_sans_ext(basename(filename))),
+                  trimmed_filename = sub(".+?.*\\(", "", file_path_sans_ext(basename(filename))),
+                  location_name = sub("\\(.*$", "", file_path_sans_ext(basename(filename))),
+                  trimmed_filename = sub("\\)", "", trimmed_filename),
+                  trimmed_filename = sub("\\(", "", trimmed_filename),
                   trimmed_filename = sub("\\)", "", trimmed_filename)) %>% 
-    separate(trimmed_filename,sep = " ",into = c("lat","lon","sensor","aveperiod","c","d"))
+    separate(trimmed_filename,sep = " ",into = c("enviro","lat","lon","sensor","aveperiod","c","d"))
 }
 
 pa_data <- ldply(all_pa_paths,import_pa,.parallel = TRUE) %>%
   dplyr::bind_rows() %>%
-  dplyr::mutate(datetime = created_at,tz = "UTC",
+  dplyr::mutate(datetime = as.POSIXct(created_at,tz = "UTC"),
                 lat = as.numeric(lat),
-                lon = as.numeric(lon)) %>% 
-  dplyr::select(-created_at)
-  as.data.table()
+                lon = as.numeric(lon),
+                year = year(datetime)) %>% 
+  dplyr::select(-c("created_at","IAQ","ADC","c","d","UptimeMinutes")) %>% 
+  dplyr::group_by(location_name,datetime) %>% 
+  dplyr::mutate(`PM1.0_CF1_ug/m3` = mean(`PM1.0_CF1_ug/m3`,na.rm = T),
+                `PM2.5_CF1_ug/m3` = mean(`PM2.5_CF1_ug/m3`,na.rm = T),
+                `PM10.0_CF1_ug/m3` = mean(`PM10.0_CF1_ug/m3`,na.rm = T)) %>% 
+  dplyr::filter(row_number()==1) %>% 
+  dplyr::mutate(region = case_when(lat %between% fence$denver_lat_range &
+                                     lon %between% fence$denver_lon_range ~ "denver",
+                                   lat %between% fence$nyc_lat_range &
+                                     lon %between% fence$nyc_lon_range ~ "nyc",
+                                   TRUE ~ "Other"))
 
-pa_data$UTCDateTime = gsub("T"," ", pa_data$UTCDateTime)
-pa_data$UTCDateTime = gsub("z","", pa_data$UTCDateTime)
-pa_data = pa_data[!grepl("[+]", pa_data$UTCDateTime),]
-pa_data = pa_data[str_length(pa_data$UTCDateTime)>15,]
-pa_data = pa_data[!grepl("[[:alpha:]]", pa_data$pm10_0_cf_1),]
-pa_data = pa_data[!grepl("[[:alpha:]]", pa_data$pm2_5_cf_1_b),]
-pa_data = pa_data[!grepl("[[:alpha:]]", pa_data$pm10_0_cf_1_b),]
-pa_data = pa_data[!grepl("[[:alpha:]]", pa_data$pm2.5_aqi_atm),]
-pa_data = pa_data[!grepl("[[:alpha:]]", pa_data$pm1_0_atm_b),]
-pa_data = pa_data[!grepl("[[:alpha:]]", pa_data$p_10_0_um_b),]
-pa_data = pa_data[pa_data$p_0_5_um != "",]
-
-
-#Convert to numeric to get rid of strange characters in some cases.
-# lst <- lapply(pa_data, grep, pattern="http", value=TRUE, invert=TRUE)
-# temp = pa_data[,sapply(pa_data[5:41],
-#               function(x) !grepl("[[:alpha:]]", x))]
-
-# suppressWarnings(pa_data[,( colnames(pa_data)[5:41]):= lapply(.SD, as.numeric), .SDcols =  colnames(pa_data)[5:41]])
-
-#Deal with timestamps
-pa_data[,UTCDateTime := as.POSIXct(UTCDateTime,"UTC", "%Y/%m/%d %H:%M:%S")]
-pa_data = na.omit(pa_data,"UTCDateTime")
-
-#Merge inventory and data
-pa_data = merge(pa_data,all_pa_inventories,by.x="mac_address",by.y = "instrument_id")
 
 #Use the average of these channels as per Mailings et al. 2019b.  Also filter out data above 4000 when doing the average
-pa_data[, pm2_5_cf_1_ave := dt_case_when(pm2_5_cf_1 <4000 & pm2_5_cf_1_b<4000 ~ rowMeans(pa_data[,c('pm2_5_cf_1','pm2_5_cf_1_b')],na.rm = TRUE) , #PM25 kitchen uses mostly ECM, but some corrected PATS data.
-                                         pm2_5_cf_1 <4000  ~ pm2_5_cf_1,
-                                         pm2_5_cf_1_b <4000  ~ pm2_5_cf_1_b)]
+# pa_data[, pm2_5_cf_1_ave := dt_case_when(pm2_5_cf_1 <4000 & pm2_5_cf_1_b<4000 ~ rowMeans(pa_data[,c('pm2_5_cf_1','pm2_5_cf_1_b')],na.rm = TRUE) , #PM25 kitchen uses mostly ECM, but some corrected PATS data.
+#                                          pm2_5_cf_1 <4000  ~ pm2_5_cf_1,
+#                                          pm2_5_cf_1_b <4000  ~ pm2_5_cf_1_b)]
 
-#Flag points above 4000 for inspection
-pa_data[, flag_maxedout := ifelse(pm2_5_cf_1 > 4000 | pm2_5_cf_1_b > 4000, 1, 0)]
-pa_data[, flag_sensor_diff := ifelse(abs(pm2_5_cf_1 - pm2_5_cf_1_b) < 5, 0,1)]
+plot_scatter_all <- pa_data %>% 
+  ggplot(aes(x=datetime,y=`PM2.5_CF1_ug/m3`,color = )) + 
+  geom_point(alpha = 0.1) +
+  geom_smooth(alpha = 0.2) +
+  facet_grid(year~enviro) +
+  ggtitle(paste0(path_region," PM2.5"))
+plot_scatter_all
+
